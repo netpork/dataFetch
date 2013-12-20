@@ -1,0 +1,369 @@
+#!/bin/bash
+#
+# SCRIPT: TVWEB FETCH // DSM-CC object parse and download
+#
+# PURPOSE: Download and save all files present in DSM-CC object carousel
+#
+# DEPENDENCIES:		tzap
+#					dvbsnoop
+#					opencaster			  
+#
+
+set -x	# uncomment to debug
+
+export PATH="/usr/lib/lightdm/lightdm:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games"
+
+###############################################################################
+# constants and variables
+###############################################################################
+readonly PACKET_COUNT=400
+readonly PACKET_LENGTH=188
+readonly ERROR_LIMIT=2
+readonly TIMEOUT_LIMIT=5
+readonly LOGFILE="/home/pi/tvweb/log/`date +%F`.log"
+readonly ME=$(basename $0)
+
+declare -i PROGRESS_PID
+declare -i CAROUSEL_SIZE
+declare -i DSMCC_PID
+declare -i ERROR_COUNT
+declare -i TIMEOUT
+declare -i WIP_STATUS
+
+###############################################################################
+# functions
+###############################################################################
+function start_progress_indicator
+{
+	while true
+	do
+		sleep 0.1
+		echo -e ".\c"
+	done &
+	
+	# save background pid so that we can kill it later	
+	PROGRESS_PID=$!
+}
+
+function stop_progress_indicator
+{
+	kill $PROGRESS_PID
+}
+
+function remove_files
+{
+	#rm -rf /var/www/*
+	rm -rf www/*
+	sudo rm -rf outputdir/*
+	#sudo rm -f ts_file1.pid0x12b.bin
+}
+
+function get_dsmcc_length()
+{
+	dvbsnoop -N $PACKET_COUNT -pd 4 -nohexdumpbuffer $DSMCC_PID > temp.bin
+	local FINDSECTIONS=$(grep -nr -m 2 "Module (0)" temp.bin | grep -oP "(\d+)(\d+)")
+	declare -a SECTION
+	
+	SECTION=($FINDSECTIONS)
+
+	local FROM=${SECTION[0]}
+	local TO=${SECTION[1]}
+	CAROUSEL_SIZE=$(sed -n "${FROM},${TO}p;${TO}q" temp.bin | \
+	grep -oP "original_size: \K\d+" | \
+	awk '{sum += $1} END {print sum}')
+}
+
+function convert()
+{	
+	log "Downloading ..."
+
+	dvbsnoop -b -crc -N $((CAROUSEL_SIZE/(PACKET_LENGTH/2))) -s ts $DSMCC_PID > ts_file1.pid0x12b.bin	
+	
+	ts2sec ts_file1.pid0x12b.bin $DSMCC_PID > output.sec & 
+	dsmcc-receive outputdir 100 $DSMCC_PID 99 < output.sec 2>&1 1>/dev/null
+
+	#cp -Lr outputdir/services/1/* /var/www/ &> /dev/null
+	#sudo chown -hR www-data:www-data /var/www/
+
+	if [ $? == 0 ]
+		then
+				log "Success. Received: `append_color $(du -hs /var/www | grep -oP "\K.+\t") BLUE`"
+		else
+				log "`append_color 'Fail' RED`"
+	fi
+}
+
+function convert_new
+{
+	dvbsnoop -b -crc -s ts $DSMCC_PID > output.ts &
+	ts2sec output.ts $DSMCC_PID > output.sec &
+	dsmcc-receive outputdir 100 $DSMCC_PID 99 < output.sec >> $LOGFILE
+
+	#cp -Lr outputdir/services/1/* /var/www/ &> /dev/null
+	cp -Lr outputdir/services/1/* www/ &> /dev/null
+
+	if [ $? == 0 ]
+		then
+				log "Success. Received: `append_color $(du -hs www/ | grep -oP "\K.+\t") BLUE`"
+				# echo -e "Success. Received: `append_color $(du -hs /var/www | grep -oP "\K.+\t") BLUE`"
+		else
+				log "`append_color 'Fail' RED`"
+				# echo -e "`append_color 'Fail' RED`"
+	fi
+}
+
+function wait_for_process()
+{
+	check_process_working "$1"
+	
+	if [ $? -eq 0 ]
+		then
+			tzap -c channels-slo.conf -rp "TVWEB" &> /dev/null &
+			if [ $? -ne 0 ]
+				then
+					log "`append_color 'tzap failed tuning!' RED`"
+					exit 1
+				else
+					log "tzap start"
+			fi
+		else
+			log "tzap working"
+	fi
+
+	sleep 2
+	
+	until true
+		do
+			sleep 1
+			check_process_working "$1"
+			if [ $? -eq 1 ]; then
+				break
+			fi 
+	done
+}
+
+function check_process_working()
+{
+	[ "$1" = "" ] && return 0
+ 	[ `pgrep -n $1` ] && return 1 || return 0
+}
+
+function check_file_size()
+{
+	if [ $CAROUSEL_SIZE -eq 0 ]; then
+		log "`append_color 'Unknown file size. Exit!' RED`"
+		exit 0
+	fi
+}
+
+function get_dsmcc_pid()
+{
+	local FIND_PID=$(dvbsnoop -s pidscan -pd 3 -maxdmx 150 | grep -P -m 1 "DSM-CC" | grep -oP  "\K\d+" | head -n 1)
+	DSMCC_PID=($FIND_PID)
+
+	if [ -z "$DSMCC_PID" ]
+		then
+			log "`append_color 'DSM-CC PID not found. Exit!' RED`"
+			# echo -e "`append_color 'DSM-CC PID not found. Exit!' RED`"
+
+			# TODO
+			# check how many times get_dsmcc_pid failed and perhaps kill tzap
+
+			# read_error_count
+
+			let "ERROR_COUNT++"
+			log "Error count: `append_color $ERROR_COUNT RED` / Error limit: `append_color $ERROR_LIMIT BLUE`"
+
+			if [ $ERROR_COUNT -eq $ERROR_LIMIT ]
+				then
+					if ! check_process_working "tzap"
+						then
+							log "`append_color 'Error limit,  restaring tzap...' RED`"
+							clean_processes
+							ERROR_COUNT=0
+					fi
+			fi
+			
+			write_error_count
+			exit 1
+		else
+			log "DSM-CC PID found: `append_color $DSMCC_PID BLUE`"
+			# echo -e "DSM-CC PID found: `append_color $DSMCC_PID BLUE`"
+			
+			reset_error_count
+	fi
+}
+
+function check_dvb_device()
+{
+	if ! test_dvb_device
+		then
+			log "`append_color 'DVB device not found. Exit!' RED`"
+			clean_processes
+			exit 1
+	fi
+}
+
+function read_wip
+{
+	read WIP_STATUS < wip.txt
+}
+
+function check_wip
+{
+	# read_wip
+	WIP_STATUS=$(pgrep -fc $ME)
+
+	log "wip: $WIP_STATUS"
+
+	if [[ $WIP_STATUS -gt 2 ]]; then
+		log "`append_color 'Work in progress, skip ...' RED`"
+		log "------------------------------------------------------"
+
+		let "TIMEOUT++"
+		log "Timeout: $TIMEOUT"
+		save_config
+
+		if [[ $TIMEOUT -eq $TIMEOUT_LIMIT ]]; then
+			log "Timeout limit, restart..."
+			TIMEOUT=0
+			#WIP_STATUS=0
+			clean_processes
+			save_config
+		fi
+
+		exit 1
+	fi
+}
+
+function set_wip()
+{
+	WIP_STATUS=$1
+	save_wip
+}
+
+function save_wip
+{
+	#echo $WIP_STATUS > wip.txt
+	save_config
+}
+
+function log()
+{
+	local ts=`date +%T`
+
+	[ "$1" = "" ] && return 0
+	# echo -e "$ts - $1" >> ./log/`date +%F`.log  
+	echo -e "$ts - $1" >> $LOGFILE  
+}
+
+function append_color()
+{
+	local NO_COLOUR="\e[0m"
+	local RED="\e[1;31m"
+	local BLUE="\e[1;34m"
+	local WHICH=$2
+
+	echo "${!WHICH}"$1$NO_COLOUR
+}
+
+function test_dvb_device()
+{
+	if [ ! -c /dev/dvb/adapter0/frontend0 ]
+		then
+			return 1
+		else
+			return 0
+	fi
+}
+
+function clean_processes()
+{
+	# pkill -9 "tzap"
+	killall --signal=KILL tzap
+	killall --signal=KILL dvbsnoop
+}
+
+# function read_error_count()
+# {
+# 	read ERROR_COUNT < error.txt
+# }
+
+function write_error_count()
+{
+	# echo $ERROR_COUNT > error.txt
+	save_config
+}
+
+function reset_error_count()
+{
+	ERROR_COUNT=0
+	save_config
+}
+
+function start_timer
+{
+	start=$(date +"%s")
+}
+
+function end_timer
+{
+	end=$(date +"%s")
+}
+
+function get_delta_time
+{
+	diff=$(($end-$start))
+	# echo "Download time: $(($diff / 60))min:$(($diff % 60))sec"
+	log "Download time: `append_color $(($diff / 60))min:$(($diff % 60))sec BLUE`"
+}
+
+function load_config
+{
+	source config.txt
+}
+
+function save_config
+{
+	echo ERROR_COUNT=$ERROR_COUNT > config.txt
+	echo TIMEOUT=$TIMEOUT >> config.txt
+#	echo WIP_STATUS=$WIP_STATUS >> config.txt
+	echo DSMCC_PID=$DSMCC_PID >> config.txt
+}
+
+###############################################################################
+# main
+###############################################################################
+log "------------------------------------------------------"
+
+load_config
+
+check_wip
+
+check_dvb_device
+
+wait_for_process "tzap"
+
+get_dsmcc_pid
+
+remove_files
+
+# get_dsmcc_length
+
+# log "Files size: `append_color $CAROUSEL_SIZE BLUE` bytes"
+
+# check_file_size
+
+# start_progress_indicator
+#set_wip 1
+
+start_timer
+convert_new
+end_timer
+get_delta_time
+
+# stop_progress_indicator
+
+#set_wip 0
+
+exit 0
