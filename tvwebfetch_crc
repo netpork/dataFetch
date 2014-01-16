@@ -9,7 +9,7 @@
 #					opencaster			  
 #
 
-#set -x	# uncomment to debug
+# set -x	# uncomment to debug
 
 export PATH="/usr/lib/lightdm/lightdm:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games"
 
@@ -20,7 +20,7 @@ readonly PACKET_COUNT=400
 readonly PACKET_LENGTH=188
 readonly ERROR_LIMIT=2
 readonly TIMEOUT_LIMIT=50
-readonly LOGFILE="/home/pi/tvweb/log/`date +%F`.log"
+readonly LOGFILE="log/`date +%F`.log"
 readonly OUTPUTDIR="outputdir/carousels/299/1"
 readonly ME=$(basename $0)
 readonly COMPONENT_TAG=99
@@ -54,9 +54,9 @@ function stop_progress_indicator
 
 function remove_files
 {
-	rm -rf /var/www/*
+	# rm -rf /var/www/*
 	#rm -rf www/*
-	sudo rm -rf outputdir/*
+	rm -rf outputdir/*
 	#sudo rm -f ts_file1.pid0x12b.bin
 }
 
@@ -101,11 +101,12 @@ function convert_new
 	ts2sec output.ts $DSMCC_PID > output.sec &
 	dsmcc-receive outputdir 100 $DSMCC_PID $COMPONENT_TAG < output.sec >> $LOGFILE
 
-	cp -Lr outputdir/services/1/* /var/www/ &> /dev/null
 	#cp -Lr outputdir/services/1/* www/ &> /dev/null
 
-	if [ $? == 0 ]
+	# check if dsmcc-receive succeded (3 == okay, 1 == failed)
+	if [ $? == 3 ]
 		then
+				cp -Lrf outputdir/services/1/* /var/www/ &> /dev/null
 				log "Success. Received: `append_color $(du -hs /var/www/ | grep -oP "\K.+\t") BLUE`"
 				# echo -e "Success. Received: `append_color $(du -hs /var/www | grep -oP "\K.+\t") BLUE`"
 		else
