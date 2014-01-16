@@ -8,9 +8,8 @@
 #					dvbsnoop
 #					opencaster			  
 #
-# finaly on git whatever
 
-# set -x	# uncomment to debug
+#set -x	# uncomment to debug
 
 export PATH="/usr/lib/lightdm/lightdm:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games"
 
@@ -20,8 +19,11 @@ export PATH="/usr/lib/lightdm/lightdm:/usr/local/sbin:/usr/local/bin:/usr/sbin:/
 readonly PACKET_COUNT=400
 readonly PACKET_LENGTH=188
 readonly ERROR_LIMIT=2
-readonly TIMEOUT_LIMIT=5
-readonly LOGFILE="./log/`date +%F`.log"
+readonly TIMEOUT_LIMIT=50
+readonly LOGFILE="/home/pi/tvweb/log/`date +%F`.log"
+readonly OUTPUTDIR="outputdir/carousels/299/1"
+readonly ME=$(basename $0)
+readonly COMPONENT_TAG=99
 
 declare -i PROGRESS_PID
 declare -i CAROUSEL_SIZE
@@ -32,7 +34,7 @@ declare -i WIP_STATUS
 
 ###############################################################################
 # functions
-###############################################################################
+################################################################################
 function start_progress_indicator
 {
 	while true
@@ -53,8 +55,9 @@ function stop_progress_indicator
 function remove_files
 {
 	rm -rf /var/www/*
+	#rm -rf www/*
 	sudo rm -rf outputdir/*
-	sudo rm -f ts_file1.pid0x12b.bin
+	#sudo rm -f ts_file1.pid0x12b.bin
 }
 
 function get_dsmcc_length()
@@ -81,7 +84,7 @@ function convert()
 	ts2sec ts_file1.pid0x12b.bin $DSMCC_PID > output.sec & 
 	dsmcc-receive outputdir 100 $DSMCC_PID 99 < output.sec 2>&1 1>/dev/null
 
-	cp -Lr outputdir/services/1/* /var/www/ &> /dev/null
+	#cp -Lr outputdir/services/1/* /var/www/ &> /dev/null
 	#sudo chown -hR www-data:www-data /var/www/
 
 	if [ $? == 0 ]
@@ -96,17 +99,19 @@ function convert_new
 {
 	dvbsnoop -b -crc -s ts $DSMCC_PID > output.ts &
 	ts2sec output.ts $DSMCC_PID > output.sec &
-	dsmcc-receive outputdir 100 $DSMCC_PID 99 < output.sec >> $LOGFILE
+	dsmcc-receive outputdir 100 $DSMCC_PID $COMPONENT_TAG < output.sec >> $LOGFILE
 
 	cp -Lr outputdir/services/1/* /var/www/ &> /dev/null
+	#cp -Lr outputdir/services/1/* www/ &> /dev/null
 
 	if [ $? == 0 ]
 		then
-				log "Success. Received: `append_color $(du -hs /var/www | grep -oP "\K.+\t") BLUE`"
+				log "Success. Received: `append_color $(du -hs /var/www/ | grep -oP "\K.+\t") BLUE`"
 				# echo -e "Success. Received: `append_color $(du -hs /var/www | grep -oP "\K.+\t") BLUE`"
 		else
 				log "`append_color 'Fail' RED`"
 				# echo -e "`append_color 'Fail' RED`"
+	reset_timeout
 	fi
 }
 
@@ -156,14 +161,14 @@ function check_file_size()
 
 function get_dsmcc_pid()
 {
-	local FIND_PID=$(dvbsnoop -s pidscan -pd 3 | grep -P -m 1 "DSM-CC" | grep -oP  "\K\d+" | head -n 1)
+	local FIND_PID=$(dvbsnoop -s pidscan -pd 3 -maxdmx 150 | grep -P -m 1 "DSM-CC" | grep -oP  "\K\d+" | head -n 1)
 	DSMCC_PID=($FIND_PID)
 
 	if [ -z "$DSMCC_PID" ]
 		then
 			log "`append_color 'DSM-CC PID not found. Exit!' RED`"
 			# echo -e "`append_color 'DSM-CC PID not found. Exit!' RED`"
-						
+
 			# TODO
 			# check how many times get_dsmcc_pid failed and perhaps kill tzap
 
@@ -171,7 +176,7 @@ function get_dsmcc_pid()
 
 			let "ERROR_COUNT++"
 			log "Error count: `append_color $ERROR_COUNT RED` / Error limit: `append_color $ERROR_LIMIT BLUE`"
-			
+
 			if [ $ERROR_COUNT -eq $ERROR_LIMIT ]
 				then
 					if ! check_process_working "tzap"
@@ -210,18 +215,25 @@ function read_wip
 function check_wip
 {
 	# read_wip
-	if [[ $WIP_STATUS -ne 0 ]]; then
+	WIP_STATUS=$(pgrep -fc $ME)
+
+	log "wip: $WIP_STATUS"
+
+	if [[ $WIP_STATUS -gt 2 ]]; then
 		log "`append_color 'Work in progress, skip ...' RED`"
 		log "------------------------------------------------------"
 
-		let "TIMEOUT++"
-		log "Timeout: $TIMEOUT"
-		save_config
+		#let "TIMEOUT++"
+		#log "Timeout: $TIMEOUT"
+		#save_config
 
-		if [[ $TIMEOUT -eq $TIMEOUT_LIMIT ]]; then
+		touch -d "-2min" limit
+
+		#if [[ $TIMEOUT -eq $TIMEOUT_LIMIT ]]; then
+		if [ limit -nt $OUTPUTDIR ]; then
 			log "Timeout limit, restart..."
 			TIMEOUT=0
-			WIP_STATUS=0
+			#WIP_STATUS=0
 			clean_processes
 			save_config
 		fi
@@ -238,7 +250,8 @@ function set_wip()
 
 function save_wip
 {
-	echo $WIP_STATUS > wip.txt
+	#echo $WIP_STATUS > wip.txt
+	save_config
 }
 
 function log()
@@ -320,11 +333,24 @@ function save_config
 {
 	echo ERROR_COUNT=$ERROR_COUNT > config.txt
 	echo TIMEOUT=$TIMEOUT >> config.txt
-	echo WIP_STATUS=$WIP_STATUS >> config.txt
+#	echo WIP_STATUS=$WIP_STATUS >> config.txt
+	echo DSMCC_PID=$DSMCC_PID >> config.txt
+}
+
+
+function reset_timeout
+{
+	TIMEOUT=0
+	save_config
+}
+
+function get_dir_size
+{
+	$OUTPUT_SIZE=$(du -sb outputdir/ | cut -f1)
 }
 
 ###############################################################################
-# main
+#main
 ###############################################################################
 log "------------------------------------------------------"
 
@@ -347,7 +373,7 @@ remove_files
 # check_file_size
 
 # start_progress_indicator
-set_wip 1
+#set_wip 1
 
 start_timer
 convert_new
@@ -356,6 +382,6 @@ get_delta_time
 
 # stop_progress_indicator
 
-set_wip 0
+#set_wip 0
 
 exit 0
