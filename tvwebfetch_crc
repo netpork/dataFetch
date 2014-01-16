@@ -107,7 +107,7 @@ function convert_new
 	if [ $? == 3 ]
 		then
 				cp -Lrf outputdir/services/1/* /var/www/ &> /dev/null
-				log "Success. Received: `append_color $(du -hs /var/www/ | grep -oP "\K.+\t") BLUE`"
+				log "Success. Received: `append_color $(du -hsL outputdir/services/1/ | grep -oP "\K.+\t") BLUE`"
 				# echo -e "Success. Received: `append_color $(du -hs /var/www | grep -oP "\K.+\t") BLUE`"
 		else
 				log "`append_color 'Fail' RED`"
