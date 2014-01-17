@@ -286,7 +286,7 @@ function test_dvb_device()
 
 function get_datetime
 {
-	date -s "`dvbsnoop -n 1 -nph 0x14 | grep "UTC_time" | awk '{print $4 " " $5}'`"
+	date -s "`dvbsnoop -n 1 -nph 0x14 | grep "UTC_time" | awk '{print $4 " " $5}'`" &> /dev/null
 }
 
 function clean_processes()
