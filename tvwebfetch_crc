@@ -284,6 +284,11 @@ function test_dvb_device()
 	fi
 }
 
+function get_datetime
+{
+	date -s "`dvbsnoop -n 1 -nph 0x14 | grep "UTC_time" | awk '{print $4 " " $5}'`"
+}
+
 function clean_processes()
 {
 	# pkill -9 "tzap"
@@ -362,6 +367,8 @@ check_wip
 check_dvb_device
 
 wait_for_process "tzap"
+
+get_datetime
 
 get_dsmcc_pid
 
