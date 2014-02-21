@@ -9,7 +9,7 @@
 #					opencaster			  
 #
 
-# set -x	# uncomment to debug
+#set -x	# uncomment to debug
 
 export PATH="/usr/lib/lightdm/lightdm:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games"
 
@@ -18,12 +18,13 @@ export PATH="/usr/lib/lightdm/lightdm:/usr/local/sbin:/usr/local/bin:/usr/sbin:/
 ###############################################################################
 readonly PACKET_COUNT=400
 readonly PACKET_LENGTH=188
-readonly ERROR_LIMIT=2
+readonly ERROR_LIMIT=5
 readonly TIMEOUT_LIMIT=50
 readonly LOGFILE="log/`date +%F`.log"
 readonly OUTPUTDIR="outputdir/carousels/299/1"
 readonly ME=$(basename $0)
 readonly COMPONENT_TAG=99
+readonly PACKED_ZIP="app_cache.zip.001"
 
 declare -i PROGRESS_PID
 declare -i CAROUSEL_SIZE
@@ -55,7 +56,7 @@ function stop_progress_indicator
 function remove_files
 {
 	# rm -rf /var/www/*
-	#rm -rf www/*
+	rm -rf www/*
 	rm -rf outputdir/*
 	#sudo rm -f ts_file1.pid0x12b.bin
 }
@@ -98,20 +99,40 @@ function convert()
 function convert_new
 {
 	dvbsnoop -b -crc -s ts $DSMCC_PID > output.ts &
-	ts2sec output.ts $DSMCC_PID > output.sec &
+	ts2sec output.ts $DSMCC_PID > output.sec 2>> $LOGFILE &
+	# dvbsnoop -b -crc -s sec $DSMCC_PID > output.sec &
 	dsmcc-receive outputdir 100 $DSMCC_PID $COMPONENT_TAG < output.sec >> $LOGFILE
 
 	#cp -Lr outputdir/services/1/* www/ &> /dev/null
 
-	# check if dsmcc-receive succeded (3 == okay, 1 == failed)
-	if [ $? == 3 ]
+	# save dsmcc return code for later
+	local RESULT=$?
+
+	# check if dsmcc-receive succeded (3 == okay, 4 == carousel restarted, 1 == failed)
+	if [ $RESULT == 3 ]
 		then
-				cp -Lrf outputdir/services/1/* /var/www/ &> /dev/null
-				log "Success. Received: `append_color $(du -hsL outputdir/services/1/ | grep -oP "\K.+\t") BLUE`"
+				cp -Lrf outputdir/services/1/* www/ &> /dev/null
+				7z x www/$PACKED_ZIP -aoa -o/var/www/
+				if [ $? == 0 ]; then
+					log "Success. Received: `append_color $(du -hsL www/ | grep -oP "\K.+\t") BLUE`"
+					chown -hR www-data:www-data /var/www
+				else
+					log "`append_color 'Depack archive error...' RED`"
+					remove_files
+				fi
+
 				# echo -e "Success. Received: `append_color $(du -hs /var/www | grep -oP "\K.+\t") BLUE`"
 		else
 				log "`append_color 'Fail' RED`"
 				# echo -e "`append_color 'Fail' RED`"
+				remove_files
+
+				if [ $RESULT == 4 ]
+					then
+						log "Carousel restarted/updated..."					
+						sleep 2
+						convert_new
+				fi
 	reset_timeout
 	fi
 }
@@ -162,7 +183,13 @@ function check_file_size()
 
 function get_dsmcc_pid()
 {
+	# if pid already loaded from config.txt skip pidscan
+	if [ -n "$DSMCC_PID" ]; then
+		return 0
+	fi
+
 	local FIND_PID=$(dvbsnoop -s pidscan -pd 3 -maxdmx 150 | grep -P -m 1 "DSM-CC" | grep -oP  "\K\d+" | head -n 1)
+	# local FIND_PID=$(dvbsnoop -s pidscan -pd 3 | grep -P -m 1 "DSM-CC" | grep -oP  "\K\d+" | head -n 1)
 	DSMCC_PID=($FIND_PID)
 
 	if [ -z "$DSMCC_PID" ]
@@ -231,12 +258,16 @@ function check_wip
 		touch -d "-2min" limit
 
 		#if [[ $TIMEOUT -eq $TIMEOUT_LIMIT ]]; then
-		if [ limit -nt $OUTPUTDIR ]; then
-			log "Timeout limit, restart..."
-			TIMEOUT=0
-			#WIP_STATUS=0
-			clean_processes
-			save_config
+		# log "check dir"
+		if [ -d $OUTPUTDIR ]; then
+			# log "dir exist"
+			if [ limit -nt $OUTPUTDIR ]; then
+				log "Timeout limit, restart..."
+				TIMEOUT=0
+				#WIP_STATUS=0
+				clean_processes
+				save_config
+			fi
 		fi
 
 		exit 1
@@ -294,6 +325,7 @@ function clean_processes()
 	# pkill -9 "tzap"
 	killall --signal=KILL tzap
 	killall --signal=KILL dvbsnoop
+	killall --signal=KILL dsmcc-receive
 }
 
 # function read_error_count()
@@ -368,9 +400,9 @@ check_dvb_device
 
 wait_for_process "tzap"
 
-get_datetime
-
 get_dsmcc_pid
+
+get_datetime
 
 remove_files
 
