@@ -25,6 +25,7 @@ readonly OUTPUTDIR="outputdir/carousels/299/1"
 readonly ME=$(basename $0)
 readonly COMPONENT_TAG=99
 readonly PACKED_ZIP="app_cache.zip.001"
+readonly LED_TRIGGER="/sys/class/leds/led0/trigger"
 
 declare -i PROGRESS_PID
 declare -i CAROUSEL_SIZE
@@ -98,6 +99,7 @@ function convert()
 
 function convert_new
 {
+	led_work
 	dvbsnoop -b -crc -s ts $DSMCC_PID > output.ts &
 	ts2sec output.ts $DSMCC_PID > output.sec 2>> $LOGFILE &
 	# dvbsnoop -b -crc -s sec $DSMCC_PID > output.sec &
@@ -116,9 +118,11 @@ function convert_new
 				if [ $? == 0 ]; then
 					log "Success. Received: `append_color $(du -hsL www/ | grep -oP "\K.+\t") BLUE`"
 					chown -hR www-data:www-data /var/www
+					led_on
 				else
 					log "`append_color 'Depack archive error...' RED`"
 					remove_files
+					led_falure
 				fi
 
 				# echo -e "Success. Received: `append_color $(du -hs /var/www | grep -oP "\K.+\t") BLUE`"
@@ -171,6 +175,19 @@ function check_process_working()
 {
 	[ "$1" = "" ] && return 0
  	[ `pgrep -n $1` ] && return 1 || return 0
+}
+
+function check_lock
+{
+	femon -c 1 | grep FE_HAS_LOCK
+	if [ $? -eq 0 ]; then
+		log "`append_color 'Signal lock...' BLUE`"
+		led_on
+	else
+		log "`append_color 'No signal lock!' RED`"
+		led_failure
+		exit 1
+	fi
 }
 
 function check_file_size()
@@ -387,6 +404,26 @@ function get_dir_size
 	$OUTPUT_SIZE=$(du -sb outputdir/ | cut -f1)
 }
 
+function led_on
+{
+	echo default-on > $LED_TRIGGER
+}
+
+function led_off
+{
+	echo none > $LED_TRIGGER
+}
+
+function led_work
+{
+	echo heartbeat > $LED_TRIGGER
+}
+
+function led_failure
+{
+	echo timer > $LED_TRIGGER
+}
+
 ###############################################################################
 #main
 ###############################################################################
@@ -398,7 +435,11 @@ check_wip
 
 check_dvb_device
 
+led_off
+
 wait_for_process "tzap"
+
+check_lock
 
 get_dsmcc_pid
 
